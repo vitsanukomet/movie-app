@@ -534,23 +534,6 @@ Resources:
         PauseTime: PT5M
         WaitOnResourceSignals: false
 
-  # ============================================================================
-  # AUTO SCALING POLICIES - กำหนดการ Scale in/out
-  # ============================================================================
-
-  # Scale Up Policy - เพิ่ม instance เมื่อ CPU สูง
-  ScaleUpPolicy:
-    Type: AWS::AutoScaling::ScalingPolicy
-    DependsOn: AppAutoScalingGroup
-    Properties:
-      AutoScalingGroupName: !Ref AppAutoScalingGroup
-      PolicyType: TargetTrackingScaling
-      TargetTrackingConfiguration:
-        PredefinedMetricSpecification:
-          PredefinedMetricType: ASGAverageCPUUtilization
-        TargetValue: 70.0
-        DisableScaleIn: false
-
 # ==============================================================================
 # Outputs - ค่าที่ต้องการแสดงหลัง Deploy เสร็จ
 # ==============================================================================
