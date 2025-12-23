@@ -33,7 +33,7 @@ Parameters:
 
   AppRepoUrl:
     Type: String
-    Default: https://github.com/your-username/movie-app.git
+    Default: https://github.com/vitsanukomet/movie-app.git
     Description: Git repository URL for the movie app (must be public or use deploy key)
 
   DBUsername:
@@ -541,6 +541,7 @@ Resources:
   # Scale Up Policy - เพิ่ม instance เมื่อ CPU สูง
   ScaleUpPolicy:
     Type: AWS::AutoScaling::ScalingPolicy
+    DependsOn: AppAutoScalingGroup
     Properties:
       AutoScalingGroupName: !Ref AppAutoScalingGroup
       PolicyType: TargetTrackingScaling
@@ -549,18 +550,6 @@ Resources:
           PredefinedMetricType: ASGAverageCPUUtilization
         TargetValue: 70.0
         DisableScaleIn: false
-
-  # Scale based on ALB request count
-  ScaleByRequestCount:
-    Type: AWS::AutoScaling::ScalingPolicy
-    Properties:
-      AutoScalingGroupName: !Ref AppAutoScalingGroup
-      PolicyType: TargetTrackingScaling
-      TargetTrackingConfiguration:
-        PredefinedMetricSpecification:
-          PredefinedMetricType: ALBRequestCountPerTarget
-          ResourceLabel: !Sub "${MovieALB.LoadBalancerFullName}/${MovieTargetGroup.TargetGroupFullName}"
-        TargetValue: 1000.0
 
 # ==============================================================================
 # Outputs - ค่าที่ต้องการแสดงหลัง Deploy เสร็จ
