@@ -1,0 +1,634 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Movie App - Full Stack Web Application with ALB + Auto Scaling + RDS Multi-AZ
+  รองรับ Failover ทั้ง Application Layer และ Database Layer
+
+# ==============================================================================
+# Parameters - ค่าที่ต้องใส่ตอน Deploy
+# ==============================================================================
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: movie-app
+    Description: Environment name prefix for tagging all resources
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair for SSH access to instances
+
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: AMI ID (default is latest Amazon Linux 2)
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+    Description: EC2 instance type for application servers
+
+  AppRepoUrl:
+    Type: String
+    Default: https://github.com/your-username/movie-app.git
+    Description: Git repository URL for the movie app (must be public or use deploy key)
+
+  DBUsername:
+    Type: String
+    Default: movieadmin
+    NoEcho: true
+    MinLength: 4
+    MaxLength: 16
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9]*"
+    Description: Master username for RDS database
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    Description: Master password for RDS database (min 8 characters)
+
+  DBName:
+    Type: String
+    Default: moviesdb
+    Description: Initial database name
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    AllowedValues:
+      - db.t3.micro
+      - db.t3.small
+      - db.t3.medium
+    Description: RDS instance class
+
+  AppPort:
+    Type: Number
+    Default: 3000
+    Description: Application port on EC2 instances
+
+  JwtSecret:
+    Type: String
+    Default: movie-app-jwt-secret-change-this-in-production
+    NoEcho: true
+    Description: JWT secret key for authentication
+
+  MinCapacity:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 10
+    Description: Minimum number of EC2 instances in Auto Scaling Group
+
+  MaxCapacity:
+    Type: Number
+    Default: 4
+    MinValue: 2
+    MaxValue: 20
+    Description: Maximum number of EC2 instances in Auto Scaling Group
+
+# ==============================================================================
+# Resources - AWS Resources ที่จะสร้าง
+# ==============================================================================
+Resources:
+  # ============================================================================
+  # NETWORKING - VPC, Subnets, Internet Gateway, Route Tables
+  # ============================================================================
+
+  # VPC - Virtual Private Cloud
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-vpc"
+
+  # Internet Gateway - ให้ VPC เข้าถึงอินเทอร์เน็ต
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-igw"
+
+  # Attach Internet Gateway to VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  # ----------------------------------------------------------------------------
+  # Public Subnets - สำหรับ ALB และ EC2 (รับ traffic จากภายนอก)
+  # ----------------------------------------------------------------------------
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-subnet-a"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-subnet-b"
+
+  # ----------------------------------------------------------------------------
+  # Private Subnets - สำหรับ RDS (ไม่รับ traffic จากภายนอกโดยตรง)
+  # ----------------------------------------------------------------------------
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-private-subnet-a"
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.12.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-private-subnet-b"
+
+  # ----------------------------------------------------------------------------
+  # Route Tables - กำหนดเส้นทาง traffic
+  # ----------------------------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-public-rt"
+
+  # Route ไปอินเทอร์เน็ตผ่าน Internet Gateway
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate Route Table กับ Public Subnets
+  PublicSubnetARouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # ============================================================================
+  # SECURITY GROUPS - กำหนด Firewall Rules
+  # ============================================================================
+
+  # Security Group สำหรับ Application Load Balancer
+  SGALB:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvironmentName}-alb-sg"
+      GroupDescription: Security group for Application Load Balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Allow HTTP from anywhere
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        # Allow HTTPS from anywhere (for future use)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-alb-sg"
+
+  # Security Group สำหรับ EC2 Application Servers
+  SGEC2:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvironmentName}-ec2-sg"
+      GroupDescription: Security group for EC2 application servers
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Allow traffic from ALB only
+        - IpProtocol: tcp
+          FromPort: !Ref AppPort
+          ToPort: !Ref AppPort
+          SourceSecurityGroupId: !Ref SGALB
+        # Allow SSH (optional - for debugging)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-ec2-sg"
+
+  # Security Group สำหรับ RDS Database
+  SGRDS:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "${EnvironmentName}-rds-sg"
+      GroupDescription: Security group for RDS database
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        # Allow MySQL traffic from EC2 only
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SGEC2
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-rds-sg"
+
+  # ============================================================================
+  # IAM - Roles and Instance Profile
+  # ============================================================================
+  
+  # IAM Role สำหรับ EC2 instances
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}-ec2-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-ec2-role"
+
+  # Instance Profile สำหรับ EC2
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${EnvironmentName}-ec2-profile"
+      Roles:
+        - !Ref EC2Role
+
+  # ============================================================================
+  # LOAD BALANCER - Application Load Balancer + Target Group + Listener
+  # ============================================================================
+
+  # Application Load Balancer
+  MovieALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnvironmentName}-alb"
+      Type: application
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref SGALB
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-alb"
+
+  # Target Group - กลุ่ม EC2 instances ที่รับ traffic
+  MovieTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-tg"
+      VpcId: !Ref VPC
+      Protocol: HTTP
+      Port: !Ref AppPort
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: "200-399"
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-tg"
+
+  # HTTP Listener - รับ traffic ที่ port 80
+  MovieListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref MovieALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref MovieTargetGroup
+
+  # ============================================================================
+  # DATABASE - RDS MySQL with Multi-AZ (Failover)
+  # ============================================================================
+
+  # DB Subnet Group - กำหนด subnets สำหรับ RDS
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${EnvironmentName}-db-subnet-group"
+      DBSubnetGroupDescription: Subnets for RDS Multi-AZ deployment
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-db-subnet-group"
+
+  # RDS MySQL Instance with Multi-AZ
+  MovieDB:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${EnvironmentName}-db"
+      Engine: mysql
+      EngineVersion: "8.0"
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: 20
+      MaxAllocatedStorage: 100
+      StorageType: gp2
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBName: !Ref DBName
+      VPCSecurityGroups:
+        - !Ref SGRDS
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      # Multi-AZ สำหรับ High Availability & Failover
+      MultiAZ: true
+      PubliclyAccessible: false
+      # Backup settings
+      BackupRetentionPeriod: 7
+      PreferredBackupWindow: "03:00-04:00"
+      PreferredMaintenanceWindow: "Mon:04:00-Mon:05:00"
+      # Additional settings
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+      EnablePerformanceInsights: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-rds"
+
+  # ============================================================================
+  # COMPUTE - EC2 Launch Template + Auto Scaling Group
+  # ============================================================================
+
+  # Launch Template - กำหนดค่า EC2 instances
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: MovieDB
+    Properties:
+      LaunchTemplateName: !Sub "${EnvironmentName}-launch-template"
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        IamInstanceProfile:
+          Name: !Ref EC2InstanceProfile
+        SecurityGroupIds:
+          - !Ref SGEC2
+        # User Data Script - ติดตั้งและรัน Application
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            
+            # Logging
+            exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+            echo "Starting UserData script..."
+            
+            # Update system
+            yum update -y
+            
+            # Install Node.js 20
+            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+            yum install -y nodejs git
+            
+            # Install PM2 globally (process manager)
+            npm install -g pm2
+            
+            # Create app directory
+            mkdir -p /opt/movie-app
+            cd /opt/movie-app
+            
+            # Clone application repository
+            git clone ${AppRepoUrl} .
+            
+            # Navigate to backend
+            cd backend
+            
+            # Create .env file with environment variables
+            cat > .env << 'ENVFILE'
+            DB_HOST=${MovieDB.Endpoint.Address}
+            DB_PORT=3306
+            DB_USER=${DBUsername}
+            DB_PASS=${DBPassword}
+            DB_NAME=${DBName}
+            APP_PORT=${AppPort}
+            JWT_SECRET=${JwtSecret}
+            ADMIN_PASSWORD=admin123
+            ENVFILE
+            
+            # Install dependencies
+            npm install
+            
+            # Initialize database and seed data
+            # Scripts are idempotent - safe to run multiple times
+            # Tables use IF NOT EXISTS, users use INSERT IGNORE
+            echo "Initializing database tables..."
+            npm run db:init || echo "DB init skipped or already done"
+            
+            echo "Seeding initial data..."
+            npm run db:seed || echo "DB seed skipped or already done"
+            
+            # Build frontend
+            cd ../frontend
+            npm install
+            npm run build
+            
+            # Copy frontend build to backend
+            cp -r dist ../backend/
+            
+            # Go back to backend and start with PM2
+            cd ../backend
+            pm2 start src/index.js --name movie-app
+            pm2 startup
+            pm2 save
+            
+            echo "UserData script completed!"
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "${EnvironmentName}-app-server"
+
+  # Auto Scaling Group - จัดการ EC2 instances อัตโนมัติ
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: MovieListener
+    Properties:
+      AutoScalingGroupName: !Sub "${EnvironmentName}-asg"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      MinSize: !Ref MinCapacity
+      MaxSize: !Ref MaxCapacity
+      DesiredCapacity: !Ref MinCapacity
+      TargetGroupARNs:
+        - !Ref MovieTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      # Scaling policies
+      MetricsCollection:
+        - Granularity: 1Minute
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-asg"
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT5M
+        WaitOnResourceSignals: false
+
+  # ============================================================================
+  # AUTO SCALING POLICIES - กำหนดการ Scale in/out
+  # ============================================================================
+
+  # Scale Up Policy - เพิ่ม instance เมื่อ CPU สูง
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: 70.0
+        DisableScaleIn: false
+
+  # Scale based on ALB request count
+  ScaleByRequestCount:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ALBRequestCountPerTarget
+          ResourceLabel: !Sub "${MovieALB.LoadBalancerFullName}/${MovieTargetGroup.TargetGroupFullName}"
+        TargetValue: 1000.0
+
+# ==============================================================================
+# Outputs - ค่าที่ต้องการแสดงหลัง Deploy เสร็จ
+# ==============================================================================
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${EnvironmentName}-VpcId"
+
+  PublicSubnets:
+    Description: Public Subnet IDs
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+    Export:
+      Name: !Sub "${EnvironmentName}-PublicSubnets"
+
+  PrivateSubnets:
+    Description: Private Subnet IDs
+    Value: !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
+    Export:
+      Name: !Sub "${EnvironmentName}-PrivateSubnets"
+
+  ALBDNSName:
+    Description: Application Load Balancer DNS Name (use this URL to access the app)
+    Value: !Sub "http://${MovieALB.DNSName}"
+    Export:
+      Name: !Sub "${EnvironmentName}-ALBDNSName"
+
+  ALBArn:
+    Description: Application Load Balancer ARN
+    Value: !Ref MovieALB
+    Export:
+      Name: !Sub "${EnvironmentName}-ALBArn"
+
+  DBEndpoint:
+    Description: RDS Database Endpoint
+    Value: !GetAtt MovieDB.Endpoint.Address
+    Export:
+      Name: !Sub "${EnvironmentName}-DBEndpoint"
+
+  DBPort:
+    Description: RDS Database Port
+    Value: !GetAtt MovieDB.Endpoint.Port
+    Export:
+      Name: !Sub "${EnvironmentName}-DBPort"
+
+  AutoScalingGroupName:
+    Description: Auto Scaling Group Name
+    Value: !Ref AppAutoScalingGroup
+    Export:
+      Name: !Sub "${EnvironmentName}-ASGName"
+
+  SecurityGroupALB:
+    Description: ALB Security Group ID
+    Value: !Ref SGALB
+    Export:
+      Name: !Sub "${EnvironmentName}-SGALB"
+
+  SecurityGroupEC2:
+    Description: EC2 Security Group ID
+    Value: !Ref SGEC2
+    Export:
+      Name: !Sub "${EnvironmentName}-SGEC2"
+
+  SecurityGroupRDS:
+    Description: RDS Security Group ID
+    Value: !Ref SGRDS
+    Export:
+      Name: !Sub "${EnvironmentName}-SGRDS"
+
