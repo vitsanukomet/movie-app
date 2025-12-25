@@ -37,7 +37,21 @@ app.use('/api/movies', moviesRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Serve static files from frontend (production)
-const frontendPath = path.join(__dirname, '../../frontend/dist');
+// Check multiple possible paths for frontend dist
+const possiblePaths = [
+  path.join(__dirname, '../dist'),           // When dist is copied to backend/
+  path.join(__dirname, '../../frontend/dist') // Development or original location
+];
+
+let frontendPath = possiblePaths[0]; // Default
+for (const p of possiblePaths) {
+  if (require('fs').existsSync(p)) {
+    frontendPath = p;
+    console.log(`📁 Frontend path found: ${p}`);
+    break;
+  }
+}
+
 app.use(express.static(frontendPath));
 
 // SPA fallback - serve index.html for all non-API routes
