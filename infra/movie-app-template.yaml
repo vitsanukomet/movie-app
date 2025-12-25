@@ -435,12 +435,27 @@ Resources:
             exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
             echo "Starting UserData script..."
             
-            # Update system
+            # Update system and install git
             yum update -y || true
+            yum install -y git
             
-            # Install Node.js 18 (compatible with Amazon Linux 2)
-            curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-            yum install -y nodejs git
+            # Install Node.js using nvm (works on Amazon Linux 2)
+            echo "Installing nvm..."
+            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+            
+            # Load nvm
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            
+            # Install Node.js 16 (compatible with Amazon Linux 2 glibc)
+            echo "Installing Node.js 16..."
+            nvm install 16
+            nvm use 16
+            nvm alias default 16
+            
+            # Add nvm to bash profile for future sessions
+            echo 'export NVM_DIR="$HOME/.nvm"' >> /root/.bashrc
+            echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> /root/.bashrc
             
             echo "Node.js version: $(node -v)"
             echo "npm version: $(npm -v)"
@@ -458,7 +473,7 @@ Resources:
             # Navigate to backend
             cd backend
             
-            # Create .env file with environment variables (CloudFormation !Sub will replace values)
+            # Create .env file with environment variables
             echo "DB_HOST=${MovieDB.Endpoint.Address}" > .env
             echo "DB_PORT=3306" >> .env
             echo "DB_USER=${DBUsername}" >> .env
@@ -492,7 +507,7 @@ Resources:
             # Go back to backend and start with PM2
             cd ../backend
             pm2 start src/index.js --name movie-app
-            pm2 startup systemd -u ec2-user --hp /home/ec2-user
+            pm2 startup systemd -u root --hp /root
             pm2 save
             
             echo "UserData script completed!"
