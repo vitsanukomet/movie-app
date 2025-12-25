@@ -430,18 +430,20 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            set -e
             
             # Logging
             exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
             echo "Starting UserData script..."
             
             # Update system
-            yum update -y
+            yum update -y || true
             
-            # Install Node.js 20
-            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+            # Install Node.js 18 (compatible with Amazon Linux 2)
+            curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
             yum install -y nodejs git
+            
+            echo "Node.js version: $(node -v)"
+            echo "npm version: $(npm -v)"
             
             # Install PM2 globally (process manager)
             npm install -g pm2
@@ -457,7 +459,7 @@ Resources:
             cd backend
             
             # Create .env file with environment variables
-            cat > .env << 'ENVFILE'
+            cat > .env << EOF
             DB_HOST=${MovieDB.Endpoint.Address}
             DB_PORT=3306
             DB_USER=${DBUsername}
@@ -466,14 +468,15 @@ Resources:
             APP_PORT=${AppPort}
             JWT_SECRET=${JwtSecret}
             ADMIN_PASSWORD=admin123
-            ENVFILE
+            EOF
+            
+            echo ".env file created:"
+            cat .env
             
             # Install dependencies
             npm install
             
             # Initialize database and seed data
-            # Scripts are idempotent - safe to run multiple times
-            # Tables use IF NOT EXISTS, users use INSERT IGNORE
             echo "Initializing database tables..."
             npm run db:init || echo "DB init skipped or already done"
             
@@ -491,10 +494,11 @@ Resources:
             # Go back to backend and start with PM2
             cd ../backend
             pm2 start src/index.js --name movie-app
-            pm2 startup
+            pm2 startup systemd -u ec2-user --hp /home/ec2-user
             pm2 save
             
             echo "UserData script completed!"
+            echo "App should be running on port ${AppPort}"
         TagSpecifications:
           - ResourceType: instance
             Tags:
