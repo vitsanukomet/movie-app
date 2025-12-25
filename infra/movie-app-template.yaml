@@ -458,17 +458,15 @@ Resources:
             # Navigate to backend
             cd backend
             
-            # Create .env file with environment variables
-            cat > .env << EOF
-            DB_HOST=${MovieDB.Endpoint.Address}
-            DB_PORT=3306
-            DB_USER=${DBUsername}
-            DB_PASS=${DBPassword}
-            DB_NAME=${DBName}
-            APP_PORT=${AppPort}
-            JWT_SECRET=${JwtSecret}
-            ADMIN_PASSWORD=admin123
-            EOF
+            # Create .env file with environment variables (CloudFormation !Sub will replace values)
+            echo "DB_HOST=${MovieDB.Endpoint.Address}" > .env
+            echo "DB_PORT=3306" >> .env
+            echo "DB_USER=${DBUsername}" >> .env
+            echo "DB_PASS=${DBPassword}" >> .env
+            echo "DB_NAME=${DBName}" >> .env
+            echo "APP_PORT=${AppPort}" >> .env
+            echo "JWT_SECRET=${JwtSecret}" >> .env
+            echo "ADMIN_PASSWORD=admin123" >> .env
             
             echo ".env file created:"
             cat .env
