@@ -29,7 +29,7 @@ router.post('/register', async (req, res) => {
     }
 
     // Check if user already exists
-    const [existing] = await pool.execute(
+    const [existing] = await pool.query(
       'SELECT id FROM users WHERE username = ?',
       [username]
     );
@@ -46,7 +46,7 @@ router.post('/register', async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, salt);
 
     // Insert new user
-    const [result] = await pool.execute(
+    const [result] = await pool.query(
       'INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)',
       [username, hashedPassword, email || null, 'user']
     );
@@ -96,7 +96,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find user
-    const [users] = await pool.execute(
+    const [users] = await pool.query(
       'SELECT id, username, password, role FROM users WHERE username = ?',
       [username]
     );
@@ -153,7 +153,7 @@ router.post('/login', async (req, res) => {
  */
 router.get('/me', verifyToken, async (req, res) => {
   try {
-    const [users] = await pool.execute(
+    const [users] = await pool.query(
       'SELECT id, username, email, role, created_at FROM users WHERE id = ?',
       [req.user.id]
     );

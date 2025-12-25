@@ -14,7 +14,7 @@ router.use(isAdmin);
  */
 router.get('/movies', async (req, res) => {
   try {
-    const [movies] = await pool.execute(
+    const [movies] = await pool.query(
       'SELECT * FROM movies ORDER BY created_at DESC'
     );
 
@@ -48,13 +48,13 @@ router.post('/movies', async (req, res) => {
       });
     }
 
-    const [result] = await pool.execute(
+    const [result] = await pool.query(
       `INSERT INTO movies (title, description, source_url, thumb_url, subtitle) 
        VALUES (?, ?, ?, ?, ?)`,
       [title, description || null, source_url, thumb_url || null, subtitle || null]
     );
 
-    const [newMovie] = await pool.execute(
+    const [newMovie] = await pool.query(
       'SELECT * FROM movies WHERE id = ?',
       [result.insertId]
     );
@@ -84,7 +84,7 @@ router.put('/movies/:id', async (req, res) => {
     const { title, description, source_url, thumb_url, subtitle } = req.body;
 
     // Check if movie exists
-    const [existing] = await pool.execute(
+    const [existing] = await pool.query(
       'SELECT id FROM movies WHERE id = ?',
       [id]
     );
@@ -129,13 +129,13 @@ router.put('/movies/:id', async (req, res) => {
     }
 
     params.push(id);
-    await pool.execute(
+    await pool.query(
       `UPDATE movies SET ${updates.join(', ')} WHERE id = ?`,
       params
     );
 
     // Get updated movie
-    const [updatedMovie] = await pool.execute(
+    const [updatedMovie] = await pool.query(
       'SELECT * FROM movies WHERE id = ?',
       [id]
     );
@@ -164,7 +164,7 @@ router.delete('/movies/:id', async (req, res) => {
     const { id } = req.params;
 
     // Check if movie exists
-    const [existing] = await pool.execute(
+    const [existing] = await pool.query(
       'SELECT id, title FROM movies WHERE id = ?',
       [id]
     );
@@ -176,7 +176,7 @@ router.delete('/movies/:id', async (req, res) => {
       });
     }
 
-    await pool.execute('DELETE FROM movies WHERE id = ?', [id]);
+    await pool.query('DELETE FROM movies WHERE id = ?', [id]);
 
     res.json({
       success: true,
@@ -198,7 +198,7 @@ router.delete('/movies/:id', async (req, res) => {
  */
 router.get('/users', async (req, res) => {
   try {
-    const [users] = await pool.execute(
+    const [users] = await pool.query(
       'SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC'
     );
 
@@ -222,9 +222,9 @@ router.get('/users', async (req, res) => {
  */
 router.get('/stats', async (req, res) => {
   try {
-    const [moviesCount] = await pool.execute('SELECT COUNT(*) as count FROM movies');
-    const [usersCount] = await pool.execute('SELECT COUNT(*) as count FROM users');
-    const [adminsCount] = await pool.execute("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
+    const [moviesCount] = await pool.query('SELECT COUNT(*) as count FROM movies');
+    const [usersCount] = await pool.query('SELECT COUNT(*) as count FROM users');
+    const [adminsCount] = await pool.query("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
 
     res.json({
       success: true,

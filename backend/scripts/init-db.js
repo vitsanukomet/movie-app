@@ -25,15 +25,15 @@ const createTables = async () => {
     connection = await mysql.createConnection(DB_CONFIG);
     console.log('✅ Connected to MySQL server');
 
-    // Create database if not exists
+    // Create database if not exists (use query instead of execute for DDL)
     console.log(`📦 Creating database "${DB_NAME}" if not exists...`);
-    await connection.execute(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\``);
-    await connection.execute(`USE \`${DB_NAME}\``);
+    await connection.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\``);
+    await connection.query(`USE \`${DB_NAME}\``);
     console.log('✅ Database ready');
 
-    // Create users table
+    // Create users table (use query for DDL statements)
     console.log('📋 Creating "users" table...');
-    await connection.execute(`
+    await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
         username VARCHAR(50) UNIQUE NOT NULL,
@@ -50,7 +50,7 @@ const createTables = async () => {
 
     // Create movies table
     console.log('📋 Creating "movies" table...');
-    await connection.execute(`
+    await connection.query(`
       CREATE TABLE IF NOT EXISTS movies (
         id INT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
